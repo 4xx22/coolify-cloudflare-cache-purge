@@ -2,7 +2,7 @@
   "name": "coolify-cloudflare-cache-purge",
   "version": "1.0.0",
   "private": true,
-  "description": "A Cloudflare Worker that purges an application's Cloudflare cache after a successful Coolify deployment.",
+  "description": "A multi-zone Cloudflare Worker that purges application caches after successful Coolify deployments.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -42,16 +42,13 @@
   "cloudflare": {
     "bindings": {
       "CLOUDFLARE_API_TOKEN": {
-        "description": "A Cloudflare API token scoped to this zone with the Zone / Cache Purge permission."
-      },
-      "CLOUDFLARE_ZONE_ID": {
-        "description": "The Cloudflare Zone ID containing the application hostname."
+        "description": "A Cloudflare API token with Zone Read and Cache Purge permissions, scoped to every zone this Worker may manage."
       },
       "WEBHOOK_SECRET": {
         "description": "A random secret of at least 32 characters. Add it to the Coolify webhook URL as the token query parameter."
       },
       "PURGE_MODE": {
-        "description": "Use hostname (recommended) to purge only the deployed hostnames, or everything to purge the entire zone."
+        "description": "Use hostname (recommended) to purge only deployed hostnames, or everything to purge every matched zone."
       }
     }
   }

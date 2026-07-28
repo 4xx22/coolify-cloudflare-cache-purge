@@ -4,7 +4,6 @@ const MAX_SECRET_LENGTH = 1024;
 
 export interface Env {
   CLOUDFLARE_API_TOKEN: string;
-  CLOUDFLARE_ZONE_ID: string;
   WEBHOOK_SECRET: string;
   PURGE_MODE?: string;
   ALLOWED_APPLICATION_UUIDS?: string;
@@ -26,10 +25,12 @@ interface CoolifyDeploymentSuccess {
   pull_request_id?: number;
 }
 
-interface CloudflareApiResponse {
+interface CloudflareApiResponse<T> {
   success: boolean;
-  result?: {
-    id?: string;
+  result?: T;
+  result_info?: {
+    page?: number;
+    total_pages?: number;
   };
   errors?: Array<{
     code?: number;
@@ -39,6 +40,21 @@ interface CloudflareApiResponse {
     code?: number;
     message?: string;
   }>;
+}
+
+interface CloudflareZone {
+  id: string;
+  name: string;
+}
+
+interface PurgeTarget {
+  zoneId: string;
+  zoneName: string;
+  hostnames: string[];
+}
+
+interface PurgeResult extends PurgeTarget {
+  purgeId?: string;
 }
 
 type PurgeMode = "hostname" | "everything";
@@ -161,18 +177,142 @@ async function readJsonBody(request: Request): Promise<unknown> {
   return JSON.parse(body) as unknown;
 }
 
+async function parseCloudflareResponse<T>(
+  response: Response,
+): Promise<CloudflareApiResponse<T> | null> {
+  try {
+    return (await response.json()) as CloudflareApiResponse<T>;
+  } catch {
+    return null;
+  }
+}
+
+function cloudflareError(
+  operation: string,
+  response: Response,
+  result: CloudflareApiResponse<unknown> | null,
+): Error {
+  const details = result?.errors
+    ?.map((error) => error.message)
+    .filter((message): message is string => Boolean(message))
+    .join("; ");
+
+  return new Error(
+    details
+      ? `Cloudflare ${operation} failed: ${details}`
+      : `Cloudflare ${operation} failed with HTTP ${response.status}.`,
+  );
+}
+
+async function listCloudflareZones(env: Env): Promise<CloudflareZone[]> {
+  const zones: CloudflareZone[] = [];
+  let page = 1;
+  let totalPages = 1;
+
+  do {
+    const url = new URL(`${CLOUDFLARE_API_BASE_URL}/zones`);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("per_page", "50");
+    url.searchParams.set("status", "active");
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
+      },
+    });
+    const result = await parseCloudflareResponse<CloudflareZone[]>(response);
+
+    if (!response.ok || result?.success !== true || !Array.isArray(result.result)) {
+      throw cloudflareError("zone discovery", response, result);
+    }
+
+    zones.push(
+      ...result.result.filter(
+        (zone) =>
+          typeof zone.id === "string" &&
+          zone.id.length > 0 &&
+          typeof zone.name === "string" &&
+          zone.name.length > 0,
+      ),
+    );
+
+    totalPages = result.result_info?.total_pages ?? 1;
+    page += 1;
+  } while (page <= totalPages && page <= 100);
+
+  if (totalPages > 100) {
+    throw new Error("Cloudflare zone discovery exceeded the pagination limit.");
+  }
+
+  return zones;
+}
+
+function resolveZones(
+  hostnames: string[],
+  zones: CloudflareZone[],
+): { targets: PurgeTarget[]; unresolved: string[] } {
+  const normalizedZones = zones
+    .map((zone) => ({
+      ...zone,
+      name: zone.name.toLowerCase().replace(/\.$/, ""),
+    }))
+    .sort((left, right) => right.name.length - left.name.length);
+  const targets = new Map<string, PurgeTarget>();
+  const unresolved: string[] = [];
+
+  for (const hostname of hostnames) {
+    const normalizedHostname = hostname.toLowerCase().replace(/\.$/, "");
+    const zone = normalizedZones.find(
+      (candidate) =>
+        normalizedHostname === candidate.name ||
+        normalizedHostname.endsWith(`.${candidate.name}`),
+    );
+
+    if (!zone) {
+      unresolved.push(hostname);
+      continue;
+    }
+
+    const target = targets.get(zone.id) ?? {
+      zoneId: zone.id,
+      zoneName: zone.name,
+      hostnames: [],
+    };
+    target.hostnames.push(hostname);
+    targets.set(zone.id, target);
+  }
+
+  return { targets: [...targets.values()], unresolved };
+}
+
+async function getPurgeTargets(
+  env: Env,
+  hostnames: string[],
+): Promise<PurgeTarget[]> {
+  const zones = await listCloudflareZones(env);
+  const { targets, unresolved } = resolveZones(hostnames, zones);
+
+  if (unresolved.length > 0) {
+    throw new RangeError(
+      `No accessible Cloudflare zone was found for: ${unresolved.join(", ")}.`,
+    );
+  }
+
+  return targets;
+}
+
 async function purgeCloudflareCache(
   env: Env,
+  target: PurgeTarget,
   mode: PurgeMode,
-  hostnames: string[],
-): Promise<{ id?: string }> {
+): Promise<PurgeResult> {
   const purgeBody =
     mode === "everything"
       ? { purge_everything: true }
-      : { hosts: hostnames };
+      : { hosts: target.hostnames };
 
   const response = await fetch(
-    `${CLOUDFLARE_API_BASE_URL}/zones/${encodeURIComponent(env.CLOUDFLARE_ZONE_ID)}/purge_cache`,
+    `${CLOUDFLARE_API_BASE_URL}/zones/${encodeURIComponent(target.zoneId)}/purge_cache`,
     {
       method: "POST",
       headers: {
@@ -182,28 +322,13 @@ async function purgeCloudflareCache(
       body: JSON.stringify(purgeBody),
     },
   );
-
-  let result: CloudflareApiResponse | null = null;
-  try {
-    result = (await response.json()) as CloudflareApiResponse;
-  } catch {
-    // The status code below still provides a useful upstream failure signal.
-  }
+  const result = await parseCloudflareResponse<{ id?: string }>(response);
 
   if (!response.ok || result?.success !== true) {
-    const details = result?.errors
-      ?.map((error) => error.message)
-      .filter((message): message is string => Boolean(message))
-      .join("; ");
-
-    throw new Error(
-      details
-        ? `Cloudflare cache purge failed: ${details}`
-        : `Cloudflare cache purge failed with HTTP ${response.status}.`,
-    );
+    throw cloudflareError("cache purge", response, result);
   }
 
-  return { id: result.result?.id };
+  return { ...target, purgeId: result.result?.id };
 }
 
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
@@ -232,9 +357,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     typeof env.WEBHOOK_SECRET !== "string" ||
     env.WEBHOOK_SECRET.length < 32 ||
     typeof env.CLOUDFLARE_API_TOKEN !== "string" ||
-    env.CLOUDFLARE_API_TOKEN.length === 0 ||
-    typeof env.CLOUDFLARE_ZONE_ID !== "string" ||
-    env.CLOUDFLARE_ZONE_ID.length === 0
+    env.CLOUDFLARE_API_TOKEN.length === 0
   ) {
     console.error("One or more required secrets are missing or invalid.");
     return jsonResponse({ error: "The Worker is incorrectly configured." }, 500);
@@ -287,7 +410,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   const hostnames =
     overrideHostnames.length > 0 ? overrideHostnames : payloadHostnames;
 
-  if (mode === "hostname" && hostnames.length === 0) {
+  if (hostnames.length === 0) {
     return jsonResponse(
       {
         error:
@@ -298,15 +421,26 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   }
 
   try {
-    const purge = await purgeCloudflareCache(env, mode, hostnames);
+    const targets = await getPurgeTargets(env, hostnames);
+    const purges: PurgeResult[] = [];
+
+    for (const target of targets) {
+      purges.push(await purgeCloudflareCache(env, target, mode));
+    }
+
+    const purgeSummary = purges.map((purge) => ({
+      zone: purge.zoneName,
+      hostnames: mode === "hostname" ? purge.hostnames : undefined,
+      purge_id: purge.purgeId,
+    }));
+
     console.log(
       JSON.stringify({
         event: "cache_purged",
         application_uuid: payload.application_uuid,
         deployment_uuid: payload.deployment_uuid,
         mode,
-        hostnames: mode === "hostname" ? hostnames : undefined,
-        purge_id: purge.id,
+        purges: purgeSummary,
       }),
     );
 
@@ -315,10 +449,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       application_uuid: payload.application_uuid,
       deployment_uuid: payload.deployment_uuid,
       mode,
-      hostnames: mode === "hostname" ? hostnames : undefined,
-      purge_id: purge.id,
+      purges: purgeSummary,
     });
   } catch (error) {
+    if (error instanceof RangeError) {
+      return jsonResponse({ error: error.message }, 422);
+    }
+
     const message =
       error instanceof Error ? error.message : "Cloudflare cache purge failed.";
     console.error(

@@ -8,8 +8,10 @@ A small, secure Cloudflare Worker that receives
 and purges an application's Cloudflare cache after a successful deployment.
 
 By default, only the hostnames included in Coolify's `deployment_success`
-payload are purged. The Worker ignores failed deployments, test notifications,
-and every other Coolify event.
+payload are purged. The Worker automatically finds the matching Cloudflare
+zone for every hostname, so one Coolify account webhook can manage applications
+across multiple root domains. Failed deployments, test notifications, and
+every other Coolify event are ignored.
 
 ## How it works
 
@@ -17,8 +19,11 @@ and every other Coolify event.
 2. The Worker authenticates the request with a shared secret.
 3. It validates the `deployment_success` payload and, if configured, the
    application's UUID.
-4. It calls Cloudflare's zone cache purge API for the deployed hostname(s).
-5. It returns a structured JSON result to Coolify.
+4. It lists the active Cloudflare zones accessible to the API token.
+5. It matches every deployed hostname to the most specific zone and groups
+   hostnames by zone.
+6. It calls Cloudflare's cache purge API once for each matched zone.
+7. It returns a structured JSON result to Coolify.
 
 The default `hostname` mode is available on every Cloudflare plan and avoids
 invalidating unrelated applications that share the same zone. An `everything`
@@ -37,13 +42,16 @@ Use the **Deploy to Cloudflare** button at the top of this README. Cloudflare
 will fork this repository into your account, ask for the required secrets, and
 deploy the Worker.
 
-You need three values:
+You need two values:
 
 | Binding | Value |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | An API token with `Zone / Cache Purge` permission, restricted to the target zone |
-| `CLOUDFLARE_ZONE_ID` | The Zone ID shown on the domain's Cloudflare Overview page |
+| `CLOUDFLARE_API_TOKEN` | An API token with `Zone Read` and `Cache Purge`, restricted to every zone the Worker may manage |
 | `WEBHOOK_SECRET` | A unique random value of at least 32 characters |
+
+The fields are intentionally blank. Cloudflare does not generate these
+credentials for you: enter your own API token and a newly generated webhook
+secret.
 
 After deployment, continue with [Configure Coolify](#configure-coolify).
 
@@ -69,7 +77,6 @@ writing it to the repository:
 
 ```sh
 pnpm wrangler secret put CLOUDFLARE_API_TOKEN
-pnpm wrangler secret put CLOUDFLARE_ZONE_ID
 pnpm wrangler secret put WEBHOOK_SECRET
 ```
 
@@ -90,12 +97,34 @@ https://coolify-cloudflare-cache-purge.<your-subdomain>.workers.dev
 
 1. Open **Cloudflare Dashboard → My Profile → API Tokens**.
 2. Select **Create Custom Token**.
-3. Add the permission **Zone → Cache Purge → Purge**.
-4. Under **Zone Resources**, restrict the token to the single target zone.
-5. Create and copy the token. It is shown only once.
+3. Add **Zone → Zone → Read**.
+4. Add **Zone → Cache Purge → Purge**.
+5. Under **Zone Resources**, include every domain that this Worker should
+   manage. Avoid granting access to unrelated zones.
+6. If you add another domain later, update the token to include its zone.
+7. Create and copy the token. It is shown only once.
 
 Do not use a Global API Key. The scoped API token is the least-privilege
-credential required by Cloudflare's cache purge API.
+credential required to discover the matching zones and purge their caches.
+
+## Multiple domains and zones
+
+A Cloudflare zone normally represents one root domain. For example,
+`example.com`, `www.example.com`, and `api.example.com` usually share the same
+zone, while `example.com` and `example.net` are separate zones.
+
+No Zone ID configuration is required. On each successful deployment, the
+Worker lists the zones visible to the token and selects the longest matching
+suffix:
+
+```text
+app.example.com → example.com
+example.net     → example.net
+```
+
+If one Coolify payload contains hostnames from several root domains, they are
+grouped and purged through separate Cloudflare API calls. If no accessible zone
+matches a hostname, the Worker returns `422` and does not start any purge.
 
 ## Configure Coolify
 
@@ -128,7 +157,7 @@ string.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `PURGE_MODE` | `hostname` | `hostname` purges only deployed hosts; `everything` purges the entire zone |
+| `PURGE_MODE` | `hostname` | `hostname` purges only deployed hosts; `everything` purges every matched zone |
 | `ALLOWED_APPLICATION_UUIDS` | empty | Optional comma-separated Coolify application UUID allowlist |
 | `PURGE_HOSTNAMES` | empty | Optional comma-separated hostname override when Coolify's `fqdn` is absent or unsuitable |
 
@@ -164,7 +193,7 @@ hostnames are removed.
 | Other authenticated Coolify event | `200` | Event ignored |
 | Invalid secret | `401` | Request rejected |
 | Invalid JSON or content type | `400` / `415` | Request rejected |
-| Missing hostname in `hostname` mode | `422` | Configuration or payload must be corrected |
+| Missing hostname or inaccessible zone | `422` | Payload or token scope must be corrected |
 | Cloudflare API failure | `502` | Failure returned so the sender can detect it |
 
 For manual requests, the Worker also accepts
@@ -172,7 +201,7 @@ For manual requests, the Worker also accepts
 
 ## Local development
 
-Copy the example secrets file and replace its placeholders:
+Copy the example secrets file and fill in its blank values:
 
 ```sh
 cp .dev.vars.example .dev.vars
@@ -193,7 +222,8 @@ runtime.
 ## Security notes
 
 - Use a long, unique webhook secret.
-- Restrict the Cloudflare API token to `Zone / Cache Purge` on one zone.
+- Grant only `Zone Read` and `Cache Purge`, restricted to the zones managed by
+  this Worker.
 - Set `ALLOWED_APPLICATION_UUIDS` when one Coolify instance deploys multiple
   applications.
 - Rotate the webhook secret if the full URL appears in logs, screenshots, or

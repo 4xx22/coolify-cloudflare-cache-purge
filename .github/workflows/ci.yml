@@ -28,8 +28,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Configure test secrets
-        run: cp .dev.vars.example .dev.vars
-
       - name: Validate Worker
         run: pnpm run check
+        env:
+          CLOUDFLARE_API_TOKEN: test-cloudflare-api-token
+          WEBHOOK_SECRET: test-webhook-secret-at-least-32-characters

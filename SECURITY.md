@@ -11,7 +11,8 @@ any suggested remediation.
 ## Operational security
 
 - Keep `CLOUDFLARE_API_TOKEN` and `WEBHOOK_SECRET` in Cloudflare Worker secrets.
-- Scope the API token to one zone and grant only `Zone / Cache Purge`.
+- Grant only `Zone Read` and `Cache Purge`, scoped to the zones the Worker
+  should manage.
 - Use a unique webhook secret of at least 32 random characters.
 - Rotate both secrets immediately if the Coolify webhook URL is exposed.
 - Consider `ALLOWED_APPLICATION_UUIDS` an additional safeguard, not a

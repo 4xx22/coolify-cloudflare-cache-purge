@@ -10,7 +10,6 @@ export default defineConfig({
       miniflare: {
         bindings: {
           CLOUDFLARE_API_TOKEN: "test-cloudflare-api-token",
-          CLOUDFLARE_ZONE_ID: "test-zone-id",
           WEBHOOK_SECRET: "test-webhook-secret",
         },
       },

@@ -1,8 +1,6 @@
-# Create a token with Zone / Cache Purge permission for the target zone.
-CLOUDFLARE_API_TOKEN=replace-with-your-cloudflare-api-token
+# Create a token with Zone Read and Cache Purge permissions for the zones this
+# Worker may manage. Keep the value empty in this example file.
+CLOUDFLARE_API_TOKEN=
 
-# Find this on the target domain's Overview page in the Cloudflare dashboard.
-CLOUDFLARE_ZONE_ID=replace-with-your-zone-id
-
-# Generate a unique random value of at least 32 characters.
-WEBHOOK_SECRET=replace-with-a-long-random-secret
+# Generate a unique random value of at least 32 characters. Keep it empty here.
+WEBHOOK_SECRET=
