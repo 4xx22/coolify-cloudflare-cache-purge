@@ -57,7 +57,40 @@ interface PurgeResult extends PurgeTarget {
   purgeId?: string;
 }
 
+interface PurgeSummary {
+  zone: string;
+  hostnames?: string[];
+  purge_id?: string;
+}
+
 type PurgeMode = "hostname" | "everything";
+type LogLevel = "log" | "warn" | "error";
+
+function writeLog(
+  level: LogLevel,
+  event: string,
+  message: string,
+  details: Record<string, unknown> = {},
+): void {
+  console[level](
+    JSON.stringify({
+      event,
+      message,
+      ...details,
+    }),
+  );
+}
+
+function summarizePurges(
+  purges: PurgeResult[],
+  mode: PurgeMode,
+): PurgeSummary[] {
+  return purges.map((purge) => ({
+    zone: purge.zoneName,
+    hostnames: mode === "hostname" ? purge.hostnames : undefined,
+    purge_id: purge.purgeId,
+  }));
+}
 
 function jsonResponse(
   body: Record<string, unknown>,
@@ -331,7 +364,7 @@ async function purgeCloudflareCache(
   return { ...target, purgeId: result.result?.id };
 }
 
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
+async function processRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 
   if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
@@ -346,6 +379,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   }
 
   if (request.method !== "POST") {
+    writeLog(
+      "warn",
+      "webhook_rejected",
+      "Rejected webhook request because the HTTP method is not allowed.",
+      { status_code: 405 },
+    );
     return jsonResponse(
       { error: "Method not allowed." },
       405,
@@ -359,16 +398,33 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     typeof env.CLOUDFLARE_API_TOKEN !== "string" ||
     env.CLOUDFLARE_API_TOKEN.length === 0
   ) {
-    console.error("One or more required secrets are missing or invalid.");
+    writeLog(
+      "error",
+      "worker_configuration_error",
+      "Worker configuration is invalid because required secrets are missing or malformed.",
+      { status_code: 500 },
+    );
     return jsonResponse({ error: "The Worker is incorrectly configured." }, 500);
   }
 
   if (!(await secretsMatch(getProvidedSecret(request), env.WEBHOOK_SECRET))) {
+    writeLog(
+      "warn",
+      "webhook_rejected",
+      "Rejected webhook request because authentication failed.",
+      { status_code: 401 },
+    );
     return jsonResponse({ error: "Unauthorized." }, 401);
   }
 
   const contentType = request.headers.get("Content-Type")?.toLowerCase() ?? "";
   if (!contentType.startsWith("application/json")) {
+    writeLog(
+      "warn",
+      "webhook_rejected",
+      "Rejected webhook request because Content-Type is not application/json.",
+      { status_code: 415 },
+    );
     return jsonResponse({ error: "Content-Type must be application/json." }, 415);
   }
 
@@ -380,10 +436,29 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       error instanceof RangeError
         ? error.message
         : "The request body must contain valid JSON.";
-    return jsonResponse({ error: message }, error instanceof RangeError ? 413 : 400);
+    const statusCode = error instanceof RangeError ? 413 : 400;
+    writeLog("warn", "webhook_rejected", message, {
+      status_code: statusCode,
+    });
+    return jsonResponse({ error: message }, statusCode);
   }
 
   if (!isDeploymentSuccess(payload)) {
+    const coolifyEvent =
+      typeof payload === "object" &&
+      payload !== null &&
+      typeof (payload as Record<string, unknown>).event === "string"
+        ? (payload as Record<string, unknown>).event
+        : undefined;
+    writeLog(
+      "log",
+      "webhook_ignored",
+      "Ignored Coolify webhook because it is not a successful deployment event.",
+      {
+        status_code: 200,
+        coolify_event: coolifyEvent,
+      },
+    );
     return jsonResponse({
       action: "ignored",
       reason: "Only successful deployment events trigger a cache purge.",
@@ -391,6 +466,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   }
 
   if (!isAllowedApplication(payload, env.ALLOWED_APPLICATION_UUIDS)) {
+    writeLog(
+      "log",
+      "webhook_ignored",
+      "Ignored successful deployment because the application is not in the allowlist.",
+      {
+        status_code: 200,
+        application_uuid: payload.application_uuid,
+        deployment_uuid: payload.deployment_uuid,
+      },
+    );
     return jsonResponse({
       action: "ignored",
       reason: "The application is not in the configured allowlist.",
@@ -399,7 +484,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
   const mode = getPurgeMode(env.PURGE_MODE);
   if (mode === null) {
-    console.error("Invalid PURGE_MODE configuration.");
+    writeLog(
+      "error",
+      "worker_configuration_error",
+      "Worker configuration is invalid because PURGE_MODE is unsupported.",
+      {
+        status_code: 500,
+        application_uuid: payload.application_uuid,
+        deployment_uuid: payload.deployment_uuid,
+      },
+    );
     return jsonResponse({ error: "The Worker is incorrectly configured." }, 500);
   }
 
@@ -411,6 +505,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     overrideHostnames.length > 0 ? overrideHostnames : payloadHostnames;
 
   if (hostnames.length === 0) {
+    writeLog(
+      "warn",
+      "cache_purge_rejected",
+      "Rejected cache purge because no valid hostname was provided.",
+      {
+        status_code: 422,
+        application_uuid: payload.application_uuid,
+        deployment_uuid: payload.deployment_uuid,
+      },
+    );
     return jsonResponse(
       {
         error:
@@ -420,28 +524,34 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     );
   }
 
+  const completedPurges: PurgeResult[] = [];
+  let activeTarget: PurgeTarget | undefined;
+
   try {
     const targets = await getPurgeTargets(env, hostnames);
-    const purges: PurgeResult[] = [];
 
     for (const target of targets) {
-      purges.push(await purgeCloudflareCache(env, target, mode));
+      activeTarget = target;
+      completedPurges.push(await purgeCloudflareCache(env, target, mode));
     }
 
-    const purgeSummary = purges.map((purge) => ({
-      zone: purge.zoneName,
-      hostnames: mode === "hostname" ? purge.hostnames : undefined,
-      purge_id: purge.purgeId,
-    }));
+    const purgeSummary = summarizePurges(completedPurges, mode);
+    const zoneLabel = `${purgeSummary.length} zone${purgeSummary.length === 1 ? "" : "s"}`;
+    const deploymentLabel = payload.deployment_uuid
+      ? ` ${payload.deployment_uuid}`
+      : "";
 
-    console.log(
-      JSON.stringify({
-        event: "cache_purged",
+    writeLog(
+      "log",
+      "cache_purged",
+      `Purged Cloudflare cache for ${zoneLabel} after Coolify deployment${deploymentLabel}.`,
+      {
+        status_code: 200,
         application_uuid: payload.application_uuid,
         deployment_uuid: payload.deployment_uuid,
         mode,
         purges: purgeSummary,
-      }),
+      },
     );
 
     return jsonResponse({
@@ -453,21 +563,50 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     });
   } catch (error) {
     if (error instanceof RangeError) {
+      writeLog("warn", "cache_purge_rejected", error.message, {
+        status_code: 422,
+        application_uuid: payload.application_uuid,
+        deployment_uuid: payload.deployment_uuid,
+        hostnames,
+      });
       return jsonResponse({ error: error.message }, 422);
     }
 
     const message =
       error instanceof Error ? error.message : "Cloudflare cache purge failed.";
-    console.error(
-      JSON.stringify({
-        event: "cache_purge_failed",
+    writeLog(
+      "error",
+      "cache_purge_failed",
+      message,
+      {
+        status_code: 502,
         application_uuid: payload.application_uuid,
         deployment_uuid: payload.deployment_uuid,
-        message,
-      }),
+        hostnames,
+        mode,
+        failed_zone: activeTarget?.zoneName,
+        completed_purges: summarizePurges(completedPurges, mode),
+      },
     );
 
     return jsonResponse({ error: message }, 502);
+  }
+}
+
+export async function handleRequest(request: Request, env: Env): Promise<Response> {
+  try {
+    return await processRequest(request, env);
+  } catch (error) {
+    writeLog(
+      "error",
+      "worker_unexpected_error",
+      "An unexpected internal Worker error occurred.",
+      {
+        status_code: 500,
+        error_type: error instanceof Error ? error.name : typeof error,
+      },
+    );
+    return jsonResponse({ error: "An unexpected internal error occurred." }, 500);
   }
 }
 

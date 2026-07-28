@@ -193,11 +193,36 @@ hostnames are removed.
 | Other authenticated Coolify event | `200` | Event ignored |
 | Invalid secret | `401` | Request rejected |
 | Invalid JSON or content type | `400` / `415` | Request rejected |
+| Request body larger than 32 KiB | `413` | Request rejected |
+| Non-`POST` request to `/webhook` | `405` | Request rejected |
+| Unknown endpoint | `404` | Not found |
 | Missing hostname or inaccessible zone | `422` | Payload or token scope must be corrected |
+| Invalid Worker configuration | `500` | Configuration must be corrected |
 | Cloudflare API failure | `502` | Failure returned so the sender can detect it |
 
 For manual requests, the Worker also accepts
 `Authorization: Bearer <WEBHOOK_SECRET>`.
+
+## Observability
+
+Every custom webhook log includes a human-readable `message`, which Cloudflare
+indexes as `$metadata.message`, plus a stable `event` and `status_code`.
+Application and deployment UUIDs are included when they are available.
+
+| Event | Level | Meaning |
+| --- | --- | --- |
+| `webhook_rejected` | Warning | Invalid method, authentication, content type, or request body |
+| `webhook_ignored` | Log | Unrelated Coolify event or application excluded by the allowlist |
+| `worker_configuration_error` | Error | Missing secrets or unsupported purge mode |
+| `worker_unexpected_error` | Error | Unexpected runtime failure caught by the final safety handler |
+| `cache_purge_rejected` | Warning | Missing hostname or inaccessible Cloudflare zone |
+| `cache_purge_failed` | Error | Cloudflare zone discovery or purge API failure |
+| `cache_purged` | Log | Cloudflare accepted every required cache purge |
+
+For a partial multi-zone failure, `cache_purge_failed` also includes
+`failed_zone` and `completed_purges`.
+
+Secrets and webhook URLs are never included in custom logs.
 
 ## Local development
 
