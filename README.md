@@ -121,8 +121,10 @@ secret.
 
 ## Configuration
 
-Non-secret settings are in `wrangler.jsonc` and can also be configured in the
-Cloudflare dashboard.
+`PURGE_MODE` is preconfigured in `wrangler.jsonc`. The two optional variables
+are deliberately not declared there: Cloudflare's one-click deployment form
+treats every declared variable as required, even when its default is an empty
+string.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -130,7 +132,10 @@ Cloudflare dashboard.
 | `ALLOWED_APPLICATION_UUIDS` | empty | Optional comma-separated Coolify application UUID allowlist |
 | `PURGE_HOSTNAMES` | empty | Optional comma-separated hostname override when Coolify's `fqdn` is absent or unsuitable |
 
-Examples:
+No action is required if the default behavior is suitable. To use either
+optional variable, add it after the first deployment under **Workers &
+Pages → your Worker → Settings → Variables and Secrets**, or add it to the
+`vars` object in your fork's `wrangler.jsonc` and redeploy:
 
 ```jsonc
 {
@@ -141,6 +146,10 @@ Examples:
   }
 }
 ```
+
+For durable configuration with Workers Builds, commit the variable to your
+fork. A value added only in the dashboard may be overwritten by a later source
+deployment.
 
 When `PURGE_HOSTNAMES` is empty, the Worker reads both `fqdn` and
 `preview_fqdn`. Comma-separated Coolify domains are supported and duplicate

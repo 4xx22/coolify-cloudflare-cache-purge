@@ -6,9 +6,7 @@
   "workers_dev": true,
   "preview_urls": true,
   "vars": {
-    "PURGE_MODE": "hostname",
-    "ALLOWED_APPLICATION_UUIDS": "",
-    "PURGE_HOSTNAMES": ""
+    "PURGE_MODE": "hostname"
   },
   "secrets": {
     "required": [

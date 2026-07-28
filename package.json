@@ -52,12 +52,6 @@
       },
       "PURGE_MODE": {
         "description": "Use hostname (recommended) to purge only the deployed hostnames, or everything to purge the entire zone."
-      },
-      "ALLOWED_APPLICATION_UUIDS": {
-        "description": "Optional comma-separated Coolify application UUID allowlist. Leave empty to accept any authenticated application."
-      },
-      "PURGE_HOSTNAMES": {
-        "description": "Optional comma-separated hostname override. Leave empty to use the fqdn values sent by Coolify."
       }
     }
   }

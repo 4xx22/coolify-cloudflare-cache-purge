@@ -6,8 +6,6 @@ const baseEnv: Env = {
   CLOUDFLARE_ZONE_ID: "zone-id",
   WEBHOOK_SECRET: "test-webhook-secret-at-least-32-characters",
   PURGE_MODE: "hostname",
-  ALLOWED_APPLICATION_UUIDS: "",
-  PURGE_HOSTNAMES: "",
 };
 
 const deploymentPayload = {
