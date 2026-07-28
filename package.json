@@ -1,0 +1,64 @@
+{
+  "name": "coolify-cloudflare-cache-purge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A Cloudflare Worker that purges an application's Cloudflare cache after a successful Coolify deployment.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/4xx22/coolify-cloudflare-cache-purge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/4xx22/coolify-cloudflare-cache-purge/issues"
+  },
+  "homepage": "https://github.com/4xx22/coolify-cloudflare-cache-purge#readme",
+  "keywords": [
+    "cloudflare-workers",
+    "coolify",
+    "cache-purge",
+    "webhook"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@11.17.0",
+  "scripts": {
+    "check": "pnpm run typecheck && pnpm run test && pnpm run deploy:dry-run",
+    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc -p test/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.19.0",
+    "@cloudflare/workers-types": "5.20260728.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.115.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "CLOUDFLARE_API_TOKEN": {
+        "description": "A Cloudflare API token scoped to this zone with the Zone / Cache Purge permission."
+      },
+      "CLOUDFLARE_ZONE_ID": {
+        "description": "The Cloudflare Zone ID containing the application hostname."
+      },
+      "WEBHOOK_SECRET": {
+        "description": "A random secret of at least 32 characters. Add it to the Coolify webhook URL as the token query parameter."
+      },
+      "PURGE_MODE": {
+        "description": "Use hostname (recommended) to purge only the deployed hostnames, or everything to purge the entire zone."
+      },
+      "ALLOWED_APPLICATION_UUIDS": {
+        "description": "Optional comma-separated Coolify application UUID allowlist. Leave empty to accept any authenticated application."
+      },
+      "PURGE_HOSTNAMES": {
+        "description": "Optional comma-separated hostname override. Leave empty to use the fqdn values sent by Coolify."
+      }
+    }
+  }
+}

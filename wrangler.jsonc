@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "coolify-cloudflare-cache-purge",
+  "main": "./src/index.ts",
+  "compatibility_date": "2026-07-28",
+  "workers_dev": true,
+  "preview_urls": true,
+  "vars": {
+    "PURGE_MODE": "hostname",
+    "ALLOWED_APPLICATION_UUIDS": "",
+    "PURGE_HOSTNAMES": ""
+  },
+  "secrets": {
+    "required": [
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_ZONE_ID",
+      "WEBHOOK_SECRET"
+    ]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
